@@ -649,6 +649,7 @@ class StructureTest(PymatgenTest):
             # Cause all warnings to always be triggered.
             warnings.simplefilter("always")
             s2 = Structure.from_dict(d)
+            sp = s2.site_properties
             self.assertEqual(len(w), 1)
             self.assertEqual(
                 str(w[0].message),

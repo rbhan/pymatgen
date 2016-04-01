@@ -175,7 +175,12 @@ class SiteCollection(six.with_metaclass(ABCMeta, collections.Sequence)):
             prop_keys.update(site.properties.keys())
 
         for k in prop_keys:
+            if any(k not in site.properties for site in self):
+                warnings.warn("Not all sites have property %s. Missing values "
+                              "are set to None." % k)
             props[k] = [site.properties.get(k, None) for site in self]
+
+
         return props
 
     def __contains__(self, site):
@@ -339,7 +344,47 @@ class IStructure(SiteCollection, MSONable):
     structure is equivalent to going through the sites in sequence.
     """
 
-    def __init__(self, lattice, species, coords, validate_proximity=False,
+    # will eventually be __init__(sites, validate_proximity=False, to_unit_cell=False, lattice=None)
+    def __init__(self, *args, **kwargs):
+        # parse the arguments. Accepts the old-style arguments for now
+        if not isinstance(args[0], Lattice) and isinstance(args[0][0], PeriodicSite):
+            sites = args[0]
+            validate_proximity = args[1] if len(args) > 1 else kwargs.get('validate_proximity', False)
+            to_unit_cell = args[2] if len(args) > 2 else kwargs.get('to_unit_cell', False)
+            lattice = args[3] if len(args) > 3 else kwargs.get('lattice')
+        else:
+            sites, validate_proximity, to_unit_cell, lattice = IStructure._get_sites(*args, **kwargs)
+
+        lattice = lattice or sites[0].lattice
+        for site in sites:
+            if site.lattice != lattice:
+                raise ValueError("Sites must belong to the same lattice")
+
+        if to_unit_cell:
+            new_sites = []
+            for site in sites:
+                if not np.all(np.mod(site.frac_coords, 1) == site.frac_coords):
+                    new_sites.append(PeriodicSite(site.species_and_occu, np.mod(site.frac_coords, 1), site.lattice))
+                else:
+                    new_sites.append(site)
+            sites = new_sites
+
+        self._sites = sites
+        self._lattice = lattice
+
+        if validate_proximity and not self.is_valid():
+            raise StructureError(("Structure contains sites that are ",
+                                  "less than 0.01 Angstrom apart!"))
+
+    @classmethod
+    def from_arrays(cls, lattice, species, coords, validate_proximity=False,
+                 to_unit_cell=False, coords_are_cartesian=False,
+                 site_properties=None):
+        return cls(*cls._get_sites(lattice, species, coords, validate_proximity,
+                 to_unit_cell, coords_are_cartesian, site_properties))
+
+    @classmethod
+    def _get_sites(cls, lattice, species, coords, validate_proximity=False,
                  to_unit_cell=False, coords_are_cartesian=False,
                  site_properties=None):
         """
@@ -377,10 +422,8 @@ class IStructure(SiteCollection, MSONable):
                                  " same length as the list of fractional"
                                  " coordinates.")
 
-        if isinstance(lattice, Lattice):
-            self._lattice = lattice
-        else:
-            self._lattice = Lattice(lattice)
+        if not isinstance(lattice, Lattice):
+            lattice = Lattice(lattice)
 
         sites = []
         for i in range(len(species)):
@@ -388,16 +431,13 @@ class IStructure(SiteCollection, MSONable):
             if site_properties:
                 prop = {k: v[i]
                         for k, v in site_properties.items()}
-
             sites.append(
-                PeriodicSite(species[i], coords[i], self._lattice,
+                PeriodicSite(species[i], coords[i], lattice,
                              to_unit_cell,
                              coords_are_cartesian=coords_are_cartesian,
                              properties=prop))
-        self._sites = tuple(sites)
-        if validate_proximity and not self.is_valid():
-            raise StructureError(("Structure contains sites that are ",
-                                  "less than 0.01 Angstrom apart!"))
+
+        return sites, validate_proximity, to_unit_cell, lattice
 
     @classmethod
     def from_sites(cls, sites, validate_proximity=False,
@@ -416,28 +456,7 @@ class IStructure(SiteCollection, MSONable):
         Returns:
             (Structure) Note that missing properties are set as None.
         """
-        prop_keys = []
-        props = {}
-        lattice = None
-        for i, site in enumerate(sites):
-            if not lattice:
-                lattice = site.lattice
-            elif site.lattice != lattice:
-                raise ValueError("Sites must belong to the same lattice")
-            for k, v in site.properties.items():
-                if k not in prop_keys:
-                    prop_keys.append(k)
-                    props[k] = [None] * len(sites)
-                props[k][i] = v
-        for k, v in props.items():
-            if any((vv is None for vv in v)):
-                warnings.warn("Not all sites have property %s. Missing values "
-                              "are set to None." % k)
-        return cls(lattice, [site.species_and_occu for site in sites],
-                   [site.frac_coords for site in sites],
-                   site_properties=props,
-                   validate_proximity=validate_proximity,
-                   to_unit_cell=to_unit_cell)
+        return cls(sites, validate_proximity, to_unit_cell)
 
     @classmethod
     def from_spacegroup(cls, sg, lattice, species, coords, site_properties=None,
