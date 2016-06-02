@@ -26,7 +26,32 @@ from monty.json import MSONable
 from pymatgen.util.coord_utils import pbc_diff
 from pymatgen.core.composition import Composition
 
+from functools import wraps
+def immutable(klass):
+    """
+    Makes a class immutable
+    """
+    @wraps(klass, assigned=("__name__", "__module__"), updated=())
+    class _decorated(klass):
+        # The wraps decorator can't do this because __doc__
+        # isn't writable once the class is created
+        __doc__ = klass.__doc__
 
+        _initialized = False
+
+        def __init__(self, *args, **kwargs):
+            klass.__init__(self, *args, **kwargs)
+            self._initialized = True
+
+        def __setattr__(self, key, value):
+            if self._initialized:
+                raise TypeError("Can't set property of immutable object")
+            else:
+                klass.__setattr__(self, key, value)
+
+    return _decorated
+
+@immutable
 class Site(collections.Hashable, MSONable):
     """
     A generalized *non-periodic* site. This is essentially a composition
